@@ -1,0 +1,18 @@
+[
+    {
+        "input": "stencil\\1.1、合格分供商调查评定表_投标_{{ 单位01_单位名称 }}.docx",
+        "output": "Output"
+    },
+    {
+        "input": "stencil\\1.1、合格分供商调查评定表_投标_{{ 单位02_单位名称 }} .docx",
+        "output": "Output"
+    },
+    {
+        "input": "stencil\\1.1、合格分供商调查评定表_投标_{{ 单位03_单位名称 }} .docx",
+        "output": "Output"
+    },
+    {
+        "input": "stencil\\3.1、招标文件.docx",
+        "output": "Output"
+    }
+]

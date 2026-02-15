@@ -1,0 +1,6 @@
+customtkinter
+docxtpl
+openpyxl
+pyinstaller
+pywin32
+docxcompose

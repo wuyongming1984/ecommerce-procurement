@@ -112,8 +112,10 @@ class App(ctk.CTk):
 
         btn_scan = ctk.CTkButton(frame_tools, text="🔍 从文件扫描", command=self.scan_variables_from_file)
         btn_scan.pack(side="left", padx=5, pady=5)
-
-        # Removed individual load/save buttons
+        
+        # Sorting Buttons
+        ctk.CTkButton(frame_tools, text="↓ 下移", width=50, command=self.move_var_down).pack(side="right", padx=5, pady=5)
+        ctk.CTkButton(frame_tools, text="↑ 上移", width=50, command=self.move_var_up).pack(side="right", padx=5, pady=5)
 
         btn_clear = ctk.CTkButton(frame_tools, text="🗑 清空", fg_color="#E74C3C", hover_color="#C0392B", 
                                    command=self.clear_vars, width=80)
@@ -122,6 +124,8 @@ class App(ctk.CTk):
         # List Area
         self.vars_scroll = ctk.CTkScrollableFrame(self.vars_tab, label_text="变量列表 (Key - Value)")
         self.vars_scroll.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        
+        self.selected_var_row_frame = None
 
         # Help
         lbl = ctk.CTkLabel(self.vars_tab, text="提示: 定义模板中的 {{ 变量名 }} 及其对应的值。保存后可在下次直接加载。", text_color="gray")
@@ -218,27 +222,30 @@ class App(ctk.CTk):
                                        font=("Consolas", 12), text_color="#A9B7C6")
         self.log_text.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
 
-
-    # --- Variables Logic ---
-
     def add_variable_row(self, key, val, group=""):
-        row = ctk.CTkFrame(self.vars_scroll, fg_color="#2B2B2B", corner_radius=8)
+        row = ctk.CTkFrame(self.vars_scroll, fg_color="#252525", corner_radius=8) # Darker row background
         row.pack(fill="x", pady=4, padx=5)
+        
+        # Bind Selection
+        row.bind("<Button-1>", lambda e, r=row: self.select_var_row(r))
         
         g_ent = ctk.CTkEntry(row, placeholder_text="分组", width=100, border_width=1)
         g_ent.pack(side="left", padx=(10, 5), pady=8)
         g_ent.insert(0, group)
         g_ent.bind("<KeyRelease>", lambda e: self.refresh_var_list())
+        g_ent.bind("<Button-1>", lambda e, r=row: self.select_var_row(r))
 
         k_ent = ctk.CTkEntry(row, placeholder_text="变量名", width=180, border_width=1, font=("Arial", 12, "bold"))
         k_ent.pack(side="left", padx=5, pady=8)
         k_ent.insert(0, key)
         k_ent.bind("<KeyRelease>", lambda e: self.validate_all_keys())
         k_ent.bind("<Double-Button-1>", lambda e, w=k_ent: self.copy_to_clipboard_bracket(w))
+        k_ent.bind("<Button-1>", lambda e, r=row: self.select_var_row(r))
 
         v_ent = ctk.CTkTextbox(row, width=380, height=35, border_width=1, fg_color="#1E1E1E")
         v_ent.pack(side="left", padx=5, pady=8, fill="x", expand=True)
         v_ent.insert("1.0", val)
+        v_ent.bind("<Button-1>", lambda e, r=row: self.select_var_row(r))
 
         btn_img = ctk.CTkButton(row, text="🖼 选图", width=65, height=28, command=lambda e=v_ent: self.select_image_file(e))
         btn_img.pack(side="left", padx=2, pady=8)
@@ -271,10 +278,7 @@ class App(ctk.CTk):
         on_value_change()
         btn_img.configure(command=lambda e=v_ent, cb=on_value_change: self.select_image_file(e, cb))
 
-        lbl_handle = ctk.CTkLabel(row, text="⠿", width=30, cursor="hand2", text_color="gray")
-        lbl_handle.pack(side="left", padx=2, pady=8)
-        lbl_handle.bind("<Button-1>", lambda e, r=row: self.start_drag(e, r))
-        lbl_handle.bind("<B1-Motion>", lambda e, r=row: self.on_drag(e, r))
+        # Removed Drag Handle
 
         btn_del = ctk.CTkButton(row, text="✕", width=30, height=28, fg_color="transparent", 
                                  text_color="#E74C3C", hover_color="#3D3D3D", 
@@ -283,6 +287,42 @@ class App(ctk.CTk):
 
         self.variables.append({"g": g_ent, "k": k_ent, "v": v_ent, "row": row})
         self.refresh_var_list()
+
+    def select_var_row(self, row_frame):
+        # Deselect old
+        if self.selected_var_row_frame:
+            try:
+                self.selected_var_row_frame.configure(fg_color="#2B2B2B")
+            except: pass
+        
+        self.selected_var_row_frame = row_frame
+        row_frame.configure(fg_color="#3A3A3A") # Specific highlight color
+
+    def move_var_up(self):
+        if not self.selected_var_row_frame: return
+        
+        idx = -1
+        for i, item in enumerate(self.variables):
+            if item["row"] == self.selected_var_row_frame:
+                idx = i
+                break
+        
+        if idx > 0:
+            self.variables[idx], self.variables[idx-1] = self.variables[idx-1], self.variables[idx]
+            self.refresh_var_list()
+
+    def move_var_down(self):
+        if not self.selected_var_row_frame: return
+        
+        idx = -1
+        for i, item in enumerate(self.variables):
+            if item["row"] == self.selected_var_row_frame:
+                idx = i
+                break
+        
+        if idx != -1 and idx < len(self.variables) - 1:
+            self.variables[idx], self.variables[idx+1] = self.variables[idx+1], self.variables[idx]
+            self.refresh_var_list()
 
     def select_image_file(self, entry, callback=None):
         f = filedialog.askopenfilename(filetypes=[("Images", "*.png;*.jpg;*.jpeg"), ("All Files", "*.*")], initialdir=os.getcwd())
@@ -330,42 +370,9 @@ class App(ctk.CTk):
             if item["row"] == row:
                 self.variables.pop(i)
                 break
+        if self.selected_var_row_frame == row:
+            self.selected_var_row_frame = None
         row.destroy()
-        self.refresh_var_list()
-
-    def start_drag(self, event, row):
-        pass
-
-    def on_drag(self, event, row):
-        # find index of current row
-        curr_idx = -1
-        for i, item in enumerate(self.variables):
-            if item["row"] == row:
-                curr_idx = i
-                break
-        
-        if curr_idx == -1: return
-
-        y = event.widget.winfo_rooty() + event.y
-        
-        target_idx = -1
-        for i, item in enumerate(self.variables):
-            r = item["row"]
-            r_y = r.winfo_rooty()
-            r_h = r.winfo_height()
-            
-            if r_y < y < r_y + r_h:
-                target_idx = i
-                break
-        
-        if target_idx != -1 and target_idx != curr_idx:
-            item = self.variables.pop(curr_idx)
-            self.variables.insert(target_idx, item)
-            self.refresh_var_list()
-    
-    def toggle_group(self, group_name):
-        curr = self.group_collapsed.get(group_name, False)
-        self.group_collapsed[group_name] = not curr
         self.refresh_var_list()
 
     def refresh_var_list(self):
@@ -375,20 +382,7 @@ class App(ctk.CTk):
         current_group = None
         group_data = {} # To store header info if we were to recreate it
         
-        for item in self.variables:
-            g_name = item["g"].get().strip() or "未分组"
-            if g_name != current_group:
-                current_group = g_name
-                group_data[g_name] = {
-                    "collapsed": self.group_collapsed.get(g_name, False)
-                }
-                # Find or create header
-                # For simplicity in this optimization, we'll still recreate headers
-                # but we'll minimize the pack_forget calls.
-            
         # Optimization: Clear everything once, but use update_idletasks
-        # Actually, the most reliable way to avoid flicker in CTk is to not clear everything.
-        # But headers are dynamic based on grouping.
         
         if hasattr(self, "_group_headers"):
             for h in self._group_headers:
@@ -404,9 +398,10 @@ class App(ctk.CTk):
             g_name = item["g"].get().strip() or "未分组"
             if g_name != current_group:
                 current_group = g_name
-                is_collapsed = self.group_collapsed.get(current_group, False)
+                # Default to Collapsed (True)
+                is_collapsed = self.group_collapsed.get(current_group, True)
                 
-                header = ctk.CTkFrame(self.vars_scroll, fg_color="#333333", height=36, corner_radius=6, cursor="hand2")
+                header = ctk.CTkFrame(self.vars_scroll, fg_color="#3A4550", height=36, corner_radius=6, cursor="hand2")
                 header.pack(fill="x", pady=(12, 4), padx=2)
                 
                 icon = "   ▸" if is_collapsed else "   ▾"
@@ -432,7 +427,8 @@ class App(ctk.CTk):
                 
                 self._group_headers.append(header)
             
-            if not self.group_collapsed.get(current_group, False):
+            # Show row if NOT collapsed
+            if not self.group_collapsed.get(current_group, True):
                 item["row"].pack(fill="x", pady=2)
         
         # This is the key to reducing perceived flicker
@@ -502,56 +498,35 @@ class App(ctk.CTk):
             g = item["g"].get().strip() or "未分组"
             if g == source_group_name:
                 to_clone.append({
-                    "k": item["k"].get().strip(),
-                    "v": item["v"].get("1.0", "end-1c").strip()
+                    "k": item["k"].get(),
+                    "v": item["v"].get("1.0", "end-1c")
                 })
         
-        if not to_clone:
-            return
+        if not to_clone: return
 
-        # 2. Determine next group name
-        # Try to find a trailing number (e.g. "Unit01" -> "Unit", "01")
-        match = re.search(r'^(.*?)(\d+)$', source_group_name)
-        if match:
-            base = match.group(1)
-            num_str = match.group(2)
-            width = len(num_str)
+        # 2. Determine new group name
+        base_name = source_group_name + "_copy"
+        new_group_name = base_name
+        counter = 1
+        
+        # Check existing groups in self.variables
+        existing_groups = set()
+        for item in self.variables:
+            existing_groups.add(item["g"].get().strip() or "未分组")
             
-            # Find the highest number for this base
-            max_num = int(num_str)
-            all_groups = {item["g"].get().strip() for item in self.variables}
-            for g in all_groups:
-                m = re.match(rf'^{re.escape(base)}(\d+)$', g)
-                if m:
-                    max_num = max(max_num, int(m.group(1)))
+        while new_group_name in existing_groups:
+            new_group_name = f"{base_name}{counter}"
+            counter += 1
             
-            new_num = max_num + 1
-            new_group_name = f"{base}{str(new_num).zfill(width)}"
-        else:
-            # Fallback for names without trailing numbers: "Group" -> "Group_2"
-            base = source_group_name
-            max_num = 1
-            all_groups = {item["g"].get().strip() for item in self.variables}
-            for g in all_groups:
-                m = re.match(rf'^{re.escape(base)}_(\d+)$', g)
-                if m:
-                    max_num = max(max_num, int(m.group(1)))
+        # 3. Add new variables
+        for data in to_clone:
+            self.add_variable_row(data["k"], data["v"], new_group_name)
             
-            new_num = max_num + 1
-            new_group_name = f"{base}_{new_num}"
-
-        # 3. Create new variables
-        # Fixed keys, cleared values as requested
-        for item in to_clone:
-            self.add_variable_row(item["k"], "", new_group_name)
-            
-        self.log(f"已克隆组 [{source_group_name}] -> [{new_group_name}] (Key不变，Val已清空)")
+        self.log(f"已克隆组 [{source_group_name}] -> [{new_group_name}]")
         self.refresh_var_list()
 
     def rename_group(self, old_group_name):
         """Rename all items in a group to a new group name."""
-        # 1. Ask for new name using a simple dialog (assuming user wants to replace the whole name)
-        # We use CTkInputDialog which prompts for a single string.
         dialog = ctk.CTkInputDialog(text=f"请输入新的组名 (原: {old_group_name}):", title="重命名组")
         new_name = dialog.get_input()
         
@@ -568,11 +543,19 @@ class App(ctk.CTk):
                 item["g"].insert(0, new_name)
                 count += 1
         
+        # Update collapse state key
+        if old_group_name in self.group_collapsed:
+            self.group_collapsed[new_name] = self.group_collapsed.pop(old_group_name)
+
         if count > 0:
             self.refresh_var_list()
-            self.log(f"组 [{old_group_name}] 已重命名为 [{new_name}]")
         else:
             tkinter.messagebox.showinfo("提示", "没有找到该组的变量")
+
+    def toggle_group(self, group_name):
+        curr = self.group_collapsed.get(group_name, True) 
+        self.group_collapsed[group_name] = not curr
+        self.refresh_var_list()
 
     def save_vars_json(self):
         if self.validate_all_keys():
@@ -1049,8 +1032,26 @@ class App(ctk.CTk):
             for k, v in new_row.items():
                 if k not in hidden:
                     final_row[k] = v
-            
+                    
             processed_data.append(final_row)
+            
+        # 4. Apply Sorting (Column Order)
+        ordered_cols = config.get("order", [])
+        if ordered_cols and processed_data:
+            sorted_data = []
+            for row in processed_data:
+                sorted_row = {}
+                # Add columns in order
+                for col in ordered_cols:
+                    if col in row:
+                        sorted_row[col] = row[col]
+                
+                # Add any remaining columns that weren't in order (safety)
+                for col in row:
+                    if col not in sorted_row:
+                        sorted_row[col] = row[col]
+                sorted_data.append(sorted_row)
+            return sorted_data
             
         return processed_data
 

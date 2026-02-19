@@ -18,6 +18,7 @@ class TableConfigDialog(ctk.CTkToplevel):
         if "filter_formula" not in self.config: self.config["filter_formula"] = ""
         if "auto_index" not in self.config: self.config["auto_index"] = False
         if "auto_index_name" not in self.config: self.config["auto_index_name"] = "序号"
+        if "sum_columns" not in self.config: self.config["sum_columns"] = []
         if "order" not in self.config: self.config["order"] = []
 
         self.result = None
@@ -136,7 +137,8 @@ class TableConfigDialog(ctk.CTkToplevel):
         f_header = ctk.CTkFrame(self.tab_cols, height=30, fg_color="#333333")
         f_header.pack(fill="x", padx=5)
         ctk.CTkLabel(f_header, text="显示", width=40).pack(side="left", padx=5)
-        ctk.CTkLabel(f_header, text="列名 (原列不可改, 新列可编辑)", width=150, anchor="w").pack(side="left", padx=5)
+        ctk.CTkLabel(f_header, text="求和", width=40).pack(side="left", padx=5)
+        ctk.CTkLabel(f_header, text="列名 (双击复制)", width=150, anchor="w").pack(side="left", padx=5)
         ctk.CTkLabel(f_header, text="计算公式 (混合排序)", anchor="w").pack(side="left", padx=5)
 
         # Main List
@@ -179,17 +181,29 @@ class TableConfigDialog(ctk.CTkToplevel):
             # Bind click
             lbl_new.bind("<Button-1>", lambda e, r=row: self.select_row(r))
             
+        # 1.5 Sum Checkbox
+        var_sum = ctk.BooleanVar(value=False)
+        # Check against config
+        is_sum = item["name"] in self.config.get("sum_columns", [])
+        var_sum.set(is_sum)
+        
+        chk_sum = ctk.CTkCheckBox(row, text="", width=24, variable=var_sum, checkbox_width=18, checkbox_height=18)
+        chk_sum.pack(side="left", padx=5)
         # 2. Name
         if item["type"] == "original":
             lbl_name = ctk.CTkLabel(row, text=item["name"], width=150, anchor="w")
             lbl_name.pack(side="left", padx=5)
             lbl_name.bind("<Button-1>", lambda e, r=row: self.select_row(r))
+            # Double click to copy {{ name }}
+            lbl_name.bind("<Double-Button-1>", lambda e, n=item["name"], w=lbl_name: self.copy_col_name(n, w))
+            
             item["widget_name"] = None # No entry
         else:
             ent_name = ctk.CTkEntry(row, width=150, placeholder_text="新列名")
             ent_name.pack(side="left", padx=5)
             ent_name.insert(0, item["name"])
             ent_name.bind("<Button-1>", lambda e, r=row: self.select_row(r))
+            # For new cols, user can copy from entry.
             item["widget_name"] = ent_name
 
         # 3. Formula / Info
@@ -211,7 +225,9 @@ class TableConfigDialog(ctk.CTkToplevel):
                                     command=lambda i=item, r=row: self.delete_new_col(i, r))
             btn_del.pack(side="right", padx=5)
 
-        self.rendered_rows.append({"item": item, "frame": row, "var_vis": var_vis})
+            btn_del.pack(side="right", padx=5)
+
+        self.rendered_rows.append({"item": item, "frame": row, "var_vis": var_vis, "var_sum": var_sum})
 
     def select_row(self, row_frame):
         if self.selected_row_frame:
@@ -220,6 +236,19 @@ class TableConfigDialog(ctk.CTkToplevel):
             except: pass
         self.selected_row_frame = row_frame
         row_frame.configure(fg_color=["#EBEBEB", "#3A3A3A"])
+
+    def copy_col_name(self, name, widget=None):
+        txt = f"{{{{ {name} }}}}"
+        self.clipboard_clear()
+        self.clipboard_append(txt)
+        self.update()
+        
+        if widget:
+            try:
+                original_color = widget.cget("text_color")
+                widget.configure(text_color="#2ECC71") # Green
+                self.after(500, lambda: widget.configure(text_color=original_color))
+            except: pass
 
     def add_new_compute_col(self):
         item = {"type": "new", "name": f"列{len(self.column_items)+1}", "formula": ""}
@@ -288,6 +317,7 @@ class TableConfigDialog(ctk.CTkToplevel):
         # Reconstruct output
         hidden_cols = []
         new_cols_cfg = []
+        sum_cols = []
         ordered_cols = [] # names
         
         # Iterate based on UI order (rendered_rows)
@@ -305,11 +335,17 @@ class TableConfigDialog(ctk.CTkToplevel):
                 formula = item["widget_formula"].get().strip()
                 new_cols_cfg.append({"name": name, "formula": formula})
             
+                new_cols_cfg.append({"name": name, "formula": formula})
+            
+            if rr["var_sum"].get():
+                sum_cols.append(name)
+
             ordered_cols.append(name)
 
         self.result = {
             "hidden": hidden_cols,
             "new": new_cols_cfg,
+            "sum_columns": sum_cols,
             "order": ordered_cols,
             "filter_formula": self.txt_filter.get("1.0", "end-1c").strip(),
             "auto_index": self.var_auto_index.get(),

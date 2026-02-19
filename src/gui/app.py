@@ -56,6 +56,9 @@ class App(ctk.CTk):
         self.last_saved_tables = []
         self.last_saved_mappings = []
 
+        self.selected_mapping_row_frame = None
+        self.selected_table_row_wrapper = None
+
         self._setup_vars_tab()
         self._setup_tables_tab()
         self._setup_files_tab()
@@ -147,7 +150,11 @@ class App(ctk.CTk):
                                  fg_color="#2ECC71", hover_color="#27AE60", font=("Arial", 13, "bold"))
         btn_add.pack(side="left", padx=5, pady=5)
 
-        # Removed individual load/save buttons
+        btn_table_up = ctk.CTkButton(frame_tools, text="↑ 上移", width=60, command=self.move_table_up)
+        btn_table_up.pack(side="left", padx=5, pady=5)
+        
+        btn_table_down = ctk.CTkButton(frame_tools, text="↓ 下移", width=60, command=self.move_table_down)
+        btn_table_down.pack(side="left", padx=5, pady=5)
 
         btn_clear = ctk.CTkButton(frame_tools, text="🗑 清空", fg_color="#E74C3C", hover_color="#C0392B", 
                                    command=self.clear_tables, width=80)
@@ -188,20 +195,16 @@ class App(ctk.CTk):
                                  fg_color="#2ECC71", hover_color="#27AE60", font=("Arial", 13, "bold"))
         btn_add.pack(side="left", padx=5, pady=5)
 
-        btn_save = ctk.CTkButton(frame_tools, text="💾 保存映射", command=self.save_mappings_json)
-        btn_save.pack(side="left", padx=5, pady=5)
-
-        btn_load = ctk.CTkButton(frame_tools, text="📂 加载映射", command=self.load_mappings_json)
-        btn_load.pack(side="left", padx=5, pady=5)
 
         btn_run = ctk.CTkButton(frame_tools, text="🚀 开始生成 (执行所有)", command=self.run_generation, 
                                  fg_color="#3498DB", hover_color="#2980B9", font=("Arial", 14, "bold"),
                                  height=36)
         btn_run.pack(side="right", padx=5, pady=5)
         
-        btn_clear = ctk.CTkButton(frame_tools, text="🗑 清空", fg_color="#E74C3C", hover_color="#C0392B", 
-                                   command=self.clear_mappings, width=80)
-        btn_clear.pack(side="right", padx=5, pady=5)
+        
+        ctk.CTkButton(frame_tools, text="↓ 下移", width=50, command=self.move_mapping_down).pack(side="right", padx=5, pady=5)
+        ctk.CTkButton(frame_tools, text="↑ 上移", width=50, command=self.move_mapping_up).pack(side="right", padx=5, pady=5)
+
 
         # Headers
         header_frame = ctk.CTkFrame(self.files_tab, height=35, fg_color="#333333", corner_radius=6)
@@ -695,6 +698,9 @@ class App(ctk.CTk):
         row = ctk.CTkFrame(wrapper, fg_color=bg_color, corner_radius=8)
         row.pack(fill="x", pady=0, padx=0)
         
+        # Click to select this table row
+        row.bind("<Button-1>", lambda e, w=wrapper: self.select_table_row(w))
+        
         if is_child:
             # Add a visual connector or indent
             # Use margin on left inside the row?
@@ -1036,7 +1042,19 @@ class App(ctk.CTk):
             processed_data.append(final_row)
             
         # 4. Apply Sorting (Column Order)
+        # 4. Apply Sorting (Column Order)
         ordered_cols = config.get("order", [])
+        
+        # Ensure Auto Index is FIRST if enabled
+        if config.get("auto_index", False):
+            idx_name = config.get("auto_index_name", "序号")
+            # If idx_name is in ordered_cols, remove it to re-insert at front
+            if idx_name in ordered_cols:
+                ordered_cols.remove(idx_name)
+            
+            # Prepend to order list (local copy for this run)
+            ordered_cols = [idx_name] + ordered_cols
+
         if ordered_cols and processed_data:
             sorted_data = []
             for row in processed_data:
@@ -1051,9 +1069,58 @@ class App(ctk.CTk):
                     if col not in sorted_row:
                         sorted_row[col] = row[col]
                 sorted_data.append(sorted_row)
-            return sorted_data
+            # Use sorted data as the working data
+            final_data = sorted_data
+        else:
+            final_data = processed_data
             
-        return processed_data
+        # 5. Calculate Sums & Append Total Row
+        sum_cols = config.get("sum_columns", [])
+        if sum_cols and final_data:
+            # Initialize sums
+            sums = {col: 0.0 for col in sum_cols}
+            
+            for row in final_data:
+                for col in sum_cols:
+                    val = row.get(col, 0)
+                    try:
+                        # Handle string numbers like "1,000.00"
+                        if isinstance(val, str):
+                            val = val.replace(",", "")
+                        sums[col] += float(val)
+                    except:
+                        pass # Treat as 0
+            
+            # Create Total Row
+            total_row = {}
+            first_keys = final_data[0].keys()
+            for k in first_keys:
+                total_row[k] = ""
+            
+            # Fill sums
+            for col, val in sums.items():
+                total_row[col] = round(val, 2)
+            
+            # Label "合计" in first non-sum column
+            label_col = None
+            if ordered_cols:
+                for col_name in ordered_cols:
+                    if col_name not in sum_cols and col_name not in config.get("hidden", []):
+                        label_col = col_name
+                        break
+            if not label_col:
+                for col_name in first_keys:
+                    if col_name not in sum_cols:
+                        label_col = col_name
+                        break
+            
+            if label_col:
+                total_row[label_col] = "合计"
+            
+            final_data.append(total_row)
+            
+        return final_data
+
 
 
     def _get_table_item_by_name(self, name):
@@ -1121,7 +1188,14 @@ class App(ctk.CTk):
 
             # 2. Render Grid
             # Limit to 50 rows for performance
-            display_data = data[:50]
+            limit = 50
+            display_data = list(data[:limit])
+            truncated = False
+            if len(data) > limit:
+                truncated = True
+                # Always show the last row (Total)
+                display_data.append(data[-1])
+            
             headers = list(data[0].keys()) if data else []
             
             if not headers:
@@ -1136,17 +1210,36 @@ class App(ctk.CTk):
 
             # Render Rows
             for r, row_data in enumerate(display_data):
+                # If we are truncated and this is the last item (which is the actual last row of data)
+                # But we inserted it at index 'limit'.
+                # Visual separator?
+                current_visual_row = r + 1
+                
+                if truncated and r == len(display_data) - 1:
+                    # This is the last row (Total)
+                    # Insert a separator row before it
+                    sep = ctk.CTkLabel(self.preview_scroll, text="... ...", text_color="gray")
+                    sep.grid(row=current_visual_row, column=0, columnspan=len(headers), pady=2)
+                    current_visual_row += 1
+                
                 for c, header in enumerate(headers):
                     val = row_data.get(header, "")
                     if isinstance(val, str): val = val.strip()
                     
-                    cell = ctk.CTkEntry(self.preview_scroll, width=100, border_width=0, fg_color="transparent")
-                    cell.grid(row=r+1, column=c, padx=1, pady=1, sticky="ew")
+                    # Highlight Total Row?
+                    fg = "transparent"
+                    if truncated and r == len(display_data) - 1:
+                        fg = "#2C3E50" # Dark blue background for total
+                    elif row_data.get(headers[0]) == "合计": # Simple check
+                         fg = "#2C3E50"
+
+                    cell = ctk.CTkEntry(self.preview_scroll, width=100, border_width=0, fg_color=fg)
+                    cell.grid(row=current_visual_row, column=c, padx=1, pady=1, sticky="ew")
                     cell.insert(0, str(val))
                     cell.configure(state="readonly")
             
-            if len(data) > 50:
-                 ctk.CTkLabel(self.preview_scroll, text=f"... 仅展示前 50 行 (共 {len(data)} 行) ...", text_color="gray").grid(row=51, column=0, columnspan=len(headers), pady=10)
+            if truncated:
+                 ctk.CTkLabel(self.preview_scroll, text=f"共 {len(data)} 行 (仅展示前 50 行 + 最后 1 行)", text_color="gray").grid(row=len(display_data)+2, column=0, columnspan=len(headers), pady=10)
 
         except Exception as e:
             ctk.CTkLabel(self.preview_scroll, text=f"❌ 预览错误: {str(e)}", text_color="#E74C3C").pack(pady=20)
@@ -1213,6 +1306,56 @@ class App(ctk.CTk):
         # 5. Refresh Layout (Important!)
         self.tables_scroll.update_idletasks()
 
+
+    def select_table_row(self, wrapper):
+        # Deselect old
+        if self.selected_table_row_wrapper:
+            try:
+                for child in self.selected_table_row_wrapper.winfo_children():
+                    if isinstance(child, ctk.CTkFrame) and child.cget("corner_radius") == 8:
+                        child.configure(fg_color="#2B2B2B")
+                        break
+            except: pass
+        
+        self.selected_table_row_wrapper = wrapper
+        # Highlight selected
+        for child in wrapper.winfo_children():
+            if isinstance(child, ctk.CTkFrame) and child.cget("corner_radius") == 8:
+                child.configure(fg_color="#3A3A3A")
+                break
+
+    def move_table_up(self):
+        if not self.selected_table_row_wrapper: return
+        
+        idx = -1
+        for i, item in enumerate(self.table_configs):
+            if item["wrapper"] == self.selected_table_row_wrapper:
+                idx = i
+                break
+        
+        if idx > 0:
+            self.table_configs[idx], self.table_configs[idx-1] = self.table_configs[idx-1], self.table_configs[idx]
+            self.refresh_table_list()
+
+    def move_table_down(self):
+        if not self.selected_table_row_wrapper: return
+        
+        idx = -1
+        for i, item in enumerate(self.table_configs):
+            if item["wrapper"] == self.selected_table_row_wrapper:
+                idx = i
+                break
+        
+        if idx != -1 and idx < len(self.table_configs) - 1:
+            self.table_configs[idx], self.table_configs[idx+1] = self.table_configs[idx+1], self.table_configs[idx]
+            self.refresh_table_list()
+
+    def refresh_table_list(self):
+        for item in self.table_configs:
+            item["wrapper"].pack_forget()
+        for item in self.table_configs:
+            is_child = item.get("source_type") == "table"
+            item["wrapper"].pack(fill="x", pady=2, padx=0 if is_child else 5)
 
     def clear_tables(self):
         for item in self.table_configs:
@@ -1336,10 +1479,15 @@ class App(ctk.CTk):
         row = ctk.CTkFrame(self.files_scroll, fg_color="#2B2B2B", corner_radius=8)
         row.pack(fill="x", pady=4, padx=5)
         
+        # Bind Selection
+        row.bind("<Button-1>", lambda e, r=row: self.select_mapping_row(r))
+        
         # Input
-        in_ent = ctk.CTkEntry(row, placeholder_text="模板文件路径 (.docx/.doc)", height=32, border_width=1)
+        # Input
+        in_ent = ctk.CTkEntry(row, placeholder_text="模板文件 (.docx/.xlsx)", height=32, border_width=1)
         in_ent.pack(side="left", padx=(10, 5), pady=8, fill="x", expand=True)
         in_ent.insert(0, input_path)
+        in_ent.bind("<Button-1>", lambda e, r=row: self.select_mapping_row(r))
         
         btn_in = ctk.CTkButton(row, text="🔍 选择模板", width=90, height=30, command=lambda e=in_ent: self.select_input_file(e),
                                 fg_color="#3D3D3D", hover_color="#4D4D4D")
@@ -1352,6 +1500,7 @@ class App(ctk.CTk):
         out_ent = ctk.CTkEntry(row, placeholder_text="导出目录路径", height=32, border_width=1)
         out_ent.pack(side="left", padx=5, pady=8, fill="x", expand=True)
         out_ent.insert(0, output_path)
+        out_ent.bind("<Button-1>", lambda e, r=row: self.select_mapping_row(r))
 
         btn_out_file = ctk.CTkButton(row, text="📂 导出目录", width=90, height=30, command=lambda e=out_ent: self.select_output_dir(e),
                                       fg_color="#3D3D3D", hover_color="#4D4D4D")
@@ -1366,7 +1515,7 @@ class App(ctk.CTk):
         self.file_mappings.append((in_ent, out_ent, row))
 
     def select_input_file(self, entry):
-        f = filedialog.askopenfilename(filetypes=[("Word Docs", "*.docx;*.doc")], initialdir=os.getcwd())
+        f = filedialog.askopenfilename(filetypes=[("All Templates", "*.docx;*.doc;*.xlsx"), ("Word", "*.docx;*.doc"), ("Excel", "*.xlsx")], initialdir=os.getcwd())
         if f:
             try:
                 rel_f = os.path.relpath(f, os.getcwd())
@@ -1393,12 +1542,57 @@ class App(ctk.CTk):
             if item[2] == row:
                 self.file_mappings.pop(i)
                 break
+        if self.selected_mapping_row_frame == row:
+            self.selected_mapping_row_frame = None
         row.destroy()
 
     def clear_mappings(self):
         for item in self.file_mappings:
             item[2].destroy()
         self.file_mappings = []
+        self.selected_mapping_row_frame = None
+    
+    def select_mapping_row(self, row_frame):
+        # Deselect old
+        if self.selected_mapping_row_frame:
+            try:
+                self.selected_mapping_row_frame.configure(fg_color="#2B2B2B")
+            except: pass
+        
+        self.selected_mapping_row_frame = row_frame
+        row_frame.configure(fg_color="#3A3A3A") # Highlight
+        
+    def move_mapping_up(self):
+        if not self.selected_mapping_row_frame: return
+        
+        idx = -1
+        for i, item in enumerate(self.file_mappings):
+            if item[2] == self.selected_mapping_row_frame:
+                idx = i
+                break
+        
+        if idx > 0:
+            self.file_mappings[idx], self.file_mappings[idx-1] = self.file_mappings[idx-1], self.file_mappings[idx]
+            self.refresh_mapping_list()
+
+    def move_mapping_down(self):
+        if not self.selected_mapping_row_frame: return
+        
+        idx = -1
+        for i, item in enumerate(self.file_mappings):
+            if item[2] == self.selected_mapping_row_frame:
+                idx = i
+                break
+        
+        if idx != -1 and idx < len(self.file_mappings) - 1:
+            self.file_mappings[idx], self.file_mappings[idx+1] = self.file_mappings[idx+1], self.file_mappings[idx]
+            self.refresh_mapping_list()
+            
+    def refresh_mapping_list(self):
+        for item in self.file_mappings:
+            item[2].pack_forget()
+        for item in self.file_mappings:
+            item[2].pack(fill="x", pady=4, padx=5)
 
     def save_mappings_json(self):
         fpath = filedialog.asksaveasfilename(defaultextension=".json", initialfile="生成配置.json", filetypes=[("JSON", "*.json")], initialdir=os.getcwd())
@@ -1732,6 +1926,18 @@ class App(ctk.CTk):
                 data = self.process_table_data(raw_data, cols_cfg)
                 context[name] = data
                 print(f"DEBUG_APP: Loaded table '{name}' into context. Rows: {len(data)}")
+
+                # Extract Sum Variables (if any)
+                sum_cols = cols_cfg.get("sum_columns", [])
+                if sum_cols and data:
+                    # The last row IS the total row
+                    total_row = data[-1]
+                    for col in sum_cols:
+                        val = total_row.get(col, 0)
+                        # Variable Name: TableName_ColName_SUM
+                        var_key = f"{name}_{col}_SUM"
+                        context[var_key] = val
+                        self.log(f"已注册求和变量: {var_key} = {val}")
                 
             except Exception as e:
                 self.log(f"❌ 处理表格 '{name}' 失败: {str(e)}")
@@ -1784,14 +1990,19 @@ class App(ctk.CTk):
                 filename_resolved = os.path.basename(in_path)
                 out_path = os.path.join(out_dir, filename_resolved)
 
-                # Debug: Check variables in template
-                template_vars = mgr.get_template_variables(actual_in_path)
-                self.log(f"[{filename_resolved}] 模板源: {os.path.basename(actual_in_path)}")
+                # Debug: Check variables in template (Word only)
+                is_excel = str(actual_in_path).lower().endswith(".xlsx")
                 
-                # Check for missing variables
-                missing = [v for v in template_vars if v not in context]
-                if missing:
-                    self.log(f"⚠️ 警告: 模板中存在未定义的变量: {missing}")
+                if not is_excel:
+                    template_vars = mgr.get_template_variables(actual_in_path)
+                    self.log(f"[{filename_resolved}] 模板源: {os.path.basename(actual_in_path)}")
+                    
+                    # Check for missing variables
+                    missing = [v for v in template_vars if v not in context]
+                    if missing:
+                        self.log(f"⚠️ 警告: 模板中存在未定义的变量: {missing}")
+                else:
+                    self.log(f"[{filename_resolved}] Excel 模板: {os.path.basename(actual_in_path)}")
 
                 self.log(f"正在生成: {out_path}")
                 mgr.render_and_save(actual_in_path, context, out_path)
@@ -1825,19 +2036,23 @@ class App(ctk.CTk):
         """Check for unsaved changes before exiting."""
         vars_changed = self._get_current_vars_data() != self.last_saved_vars
         mappings_changed = self._get_current_mappings_data() != self.last_saved_mappings
+        tables_changed = self._get_current_tables_data() != self.last_saved_tables
         
-        if vars_changed or mappings_changed:
-            msg = "检测到配置已修改，是否在退出前保存？\n\n"
+        if vars_changed or mappings_changed or tables_changed:
+            msg = "检测到配置已修改，是否保存到 project.json？\n\n"
             if vars_changed: msg += "- 变量配置表 已修改\n"
+            if tables_changed: msg += "- 表格配置表 已修改\n"
             if mappings_changed: msg += "- 生成配置表 已修改"
             
             res = tkinter.messagebox.askyesnocancel("退出提示", msg)
             if res is True: # Yes
-                # We can't easily call save dialogs here because they might be cancelled.
-                # Let's prompt specifically for each if changed.
-                if vars_changed: self.save_vars_json()
-                if mappings_changed: self.save_mappings_json()
-                self.destroy()
+                try:
+                    self.save_project("project.json")
+                    self.destroy()
+                except Exception as e:
+                    tkinter.messagebox.showerror("保存失败", f"无法保存到 project.json: {e}")
+                    # Allow cancel if save fails? Or just close? Let's just return to let user retry or decide.
+                    return 
             elif res is False: # No
                 self.destroy()
             else: # Cancel

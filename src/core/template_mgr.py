@@ -2,7 +2,9 @@ import os
 from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 import openpyxl
+from openpyxl.styles import Border, Side
 from pathlib import Path
+import re
 from .doc_converter import DocConverter
 
 class TemplateManager:
@@ -209,7 +211,167 @@ class TemplateManager:
         doc = DocxTemplate(actual_template_path)
         return doc.get_undeclared_template_variables()
 
+    def render_excel_template(self, template_path, context, output_path):
+        """
+        Renders an Excel template by replacing {{ key }} with values from context.
+        """
+        template_filepath = Path(template_path)
+        if not template_filepath.exists():
+             template_filepath = self.template_dir / template_path
+        
+        if not template_filepath.exists():
+            raise FileNotFoundError(f"Excel template not found: {template_path}")
+
+        # Load workbook
+        wb = openpyxl.load_workbook(template_filepath)
+        
+        # Prepare regex for replacement
+        pattern = re.compile(r"\{\{\s*(.*?)\s*\}\}")
+
+        # 1. Collect all replacements to avoid modifying while iterating
+        replacements = [] # (sheet_idx, row, col, key, original_val)
+
+        for s_idx, sheet in enumerate(wb.worksheets):
+            for row in sheet.iter_rows():
+                for cell in row:
+                    if cell.value and isinstance(cell.value, str):
+                        val = cell.value
+                        matches = pattern.findall(val)
+                        if matches:
+                            # We only handle the first match if it's a table (full cell replacement)
+                            # Or multiple matches if just strings.
+                            # For simplicity, if a cell contains {{ Table }}, we treat it as a table anchor.
+                            for m in matches:
+                                key = m.strip()
+                                replacements.append({
+                                    "sheet_idx": s_idx, 
+                                    "row": cell.row, 
+                                    "col": cell.column, 
+                                    "key": key, 
+                                    "val": val, 
+                                    "cell": cell
+                                })
+
+        # 2. Process replacements (Tables first, usually bottom-up or just handle)
+        # We need to distinguish Tables (list) from Variables (str/int)
+        
+        # Sort by row descending so insertions don't mess up lower rows? 
+        # Actually insertions push down, so processing Top-Down requires tracking offset?
+        # Processing Bottom-Up is safer for insertions.
+        replacements.sort(key=lambda x: (x["sheet_idx"], x["row"]), reverse=True)
+
+        for item in replacements:
+            sheet = wb.worksheets[item["sheet_idx"]]
+            key = item["key"]
+            cell =  sheet.cell(item["row"], item["col"]) # re-acquire cell in case object stale? (Unlikely for exact coords)
+            
+            if key in context:
+                data = context[key]
+                
+                # Check if it is a list (Table)
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                    # It's a table!
+                    # Logic: 
+                    # 1. Clear the placeholder cell.
+                    # 2. Insert N-1 rows (since we use the current row for the first item).
+                    #    Or Insert N rows and shift?
+                    #    Let's use the current row for the first item.
+                    # 3. Fill data.
+                    
+                    # Columns: The dict keys must map to columns. 
+                    # Assumption: The user simply wants the values dumped in order of keys.
+                    # Config 'order' determines dict key order.
+                    
+                    start_row = item["row"]
+                    start_col = item["col"]
+                    
+                    # Clear placeholder
+                    clean_val = item["val"].replace(f"{{{{ {key} }}}}", "") # What if other text exists?
+                    # If it's a table, we usually expect ONLY the placeholder.
+                    # Let's overwrite.
+                    
+                    count = len(data)
+                    if count > 0:
+                        # Total rows = 1 (header) + count (data)
+                        # Current row is used for header, insert count rows after it
+                        if count > 0:
+                            sheet.insert_rows(start_row + 1, amount=count)
+                        
+                        # Fill data
+                        keys = list(data[0].keys()) # Order from first dict
+                        
+                        # Prepare styles
+                        thin_border = Border(left=Side(style='thin'), 
+                                             right=Side(style='thin'), 
+                                             top=Side(style='thin'), 
+                                             bottom=Side(style='thin'))
+                        from openpyxl.styles import Font, Alignment
+                        bold_font = Font(bold=True)
+                        center_align = Alignment(horizontal='center', vertical='center')
+
+                        # Write Header Row
+                        for j, k in enumerate(keys):
+                            header_cell = sheet.cell(start_row, start_col + j)
+                            header_cell.value = k
+                            header_cell.font = bold_font
+                            header_cell.border = thin_border
+                            header_cell.alignment = center_align
+
+                        # Write Data Rows (starting from start_row + 1)
+                        for i, row_data in enumerate(data):
+                            current_r = start_row + 1 + i
+                            for j, k in enumerate(keys):
+                                target_cell = sheet.cell(current_r, start_col + j)
+                                val = row_data.get(k, "")
+                                target_cell.value = val
+                                target_cell.border = thin_border
+
+                # Standard Variable
+                else:
+                    # It's a string/number
+                    # We might have multiple variables in one string: "Price: {{price}} Unit: {{unit}}"
+                    # Re-read current value in case it was modified by another replacement in the same cell?
+                    # Since we reverse sorted, and usually one var per cell or multiple,
+                    # Safe to just standard replace string.
+                    
+                    current_val = str(cell.value) if cell.value is not None else ""
+                    
+                    def replacer(match):
+                        k = match.group(1).strip()
+                        if k in context:
+                            return str(context[k])
+                        return match.group(0)
+                        
+                    new_val_str = pattern.sub(replacer, current_val)
+                    
+                    # Numeric conversion check
+                    if new_val_str != current_val:
+                        cell.value = new_val_str
+                        try:
+                            if "." in new_val_str:
+                                cell.value = float(new_val_str)
+                            elif new_val_str.isdigit():
+                                cell.value = int(new_val_str)
+                        except:
+                            pass
+
+        # Ensure output directory
+        out_dir = Path(output_path).parent
+        if not out_dir.exists():
+            out_dir.mkdir(parents=True, exist_ok=True)
+            
+        try:
+            wb.save(output_path)
+            print(f"DEBUG: Excel saved to {output_path}")
+        except Exception as e:
+            print(f"ERROR Saving Excel: {e}")
+            raise e
+            
+        return output_path
+
     def render_and_save(self, template_name, context, output_path):
+        if str(template_name).lower().endswith(".xlsx"):
+            return self.render_excel_template(template_name, context, output_path)
         return self.render_template(template_name, context, output_path)
 
 
